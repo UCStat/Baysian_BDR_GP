@@ -32,6 +32,24 @@ jupyter notebook run_multichains.ipynb
 from run_multichains import run_multichain_analysis
 ```
 
+**Option C: Experiment Runners (Command Line Batch Runs)**
+
+Use the experiment runners when you want the repository to handle data loading,
+initialization, posterior sampling, diagnostics, metrics, plots, and summary
+files for many combinations automatically.
+
+```bash
+# Synthetic simulations from Data_generation.py
+python "Data Generation/run_simulation.py" --help
+
+# Real application datasets
+python "Application_Data/run_application.py" --help
+```
+
+The runner scripts internally call `run_multichain_analysis`. You do not need
+to manually create a sampler or follow the direct Python examples below when
+using these command-line runners.
+
 ### Step 2: Select Your Model
 
 Choose one of these configurations:
@@ -138,7 +156,48 @@ results = sampler.run_chains(Y_train, X_train, Y_test, X_test, verbose=True)
 print(results['convergence'])
 ```
 
-### Use Case 2: Using MLE for Hyperparameters
+### Use Case 2: Experiment Runners
+
+Use `run_simulation.py` for synthetic Case 1/Case 2 experiments:
+
+```bash
+python "Data Generation/run_simulation.py" \
+  --sample-size 200 \
+  --data-cases case1 case2 \
+  --data-dimensions 1 2 \
+  --posterior-dimensions 1 2 \
+  --layers 1 2 3 \
+  --w-variants full W_Known No_W No_W_Selective \
+  --n-chains 3 \
+  --n-iterations 2000 \
+  --burn-in 500 \
+  --thin 3 \
+  --output-dir ./simulation_outputs
+```
+
+Use `run_application.py` for the real application datasets:
+
+```bash
+python "Application_Data/run_application.py" \
+  --applications elliptical_pde onera \
+  --elliptical-outputs 1 2 \
+  --onera-targets lift drag \
+  --posterior-dimensions 1 2 \
+  --layers 1 2 3 \
+  --variants full No_W No_W_Selective \
+  --n-chains 3 \
+  --n-iterations 2000 \
+  --burn-in 500 \
+  --thin 3 \
+  --output-dir ./application_outputs
+```
+
+For smoke tests, add `--no-plots --no-save-samples` and reduce
+`--n-iterations`; metrics are still computed and written to the summary files.
+For full BDR models, add `--mv-sampler rstiefel --rstiefel-rscol 2` to use the
+R `rstiefel` backend for posterior `M` and `V` updates.
+
+### Use Case 3: Using MLE for Hyperparameters
 
 ```python
 sampler = MultiChainSampler(
@@ -154,7 +213,7 @@ sampler = MultiChainSampler(
 )
 ```
 
-### Use Case 3: Layer Variants (W Known, No W, etc.)
+### Use Case 4: Layer Variants (W Known, No W, etc.)
 
 ```python
 from multichain_sampler_L1_variants import MultiChainSampler_L1_Variants
@@ -174,7 +233,7 @@ sampler = MultiChainSampler_L1_Variants(
 )
 ```
 
-### Use Case 4: D>1 with Separable Kernel
+### Use Case 5: D>1 with Separable Kernel
 
 ```python
 from multichain_sampler_Dgeneral import MultiChainSampler
@@ -204,6 +263,19 @@ sampler = MultiChainSampler(
 - `variant`: `None` (full model), `'W_Known'`, `'No_W'`, `'No_W_Selective'` (for layers 1/2/3)
 - `W_fixed`: Required when `variant='W_Known'`
 - `column_indices`: Optional when `variant='No_W_Selective'` (`None` uses first `D` columns)
+
+### Experiment Runner Options
+- Synthetic runner: `Data Generation/run_simulation.py`
+- Application runner: `Application_Data/run_application.py`
+- `--posterior-dimensions`: one or more reduced dimensions `D`
+- `--layers`: one or more model depths, selected from `1`, `2`, and `3`
+- `--w-variants`: simulation-only selector for `full`, `W_Known`, `No_W`, `No_W_Selective`
+- `--include-w-variants`: simulation-only shortcut for all simulation variants
+- `--variants`: application-only selector for `full`, `No_W`, `No_W_Selective`
+- `--no-plots`: skip plot PDFs; metrics are still computed
+- `--no-save-samples`: skip `mcmc_samples.pkl`; summaries and metrics are still written
+- `--mv-sampler rstiefel`: optional R `rstiefel` backend for posterior `M` and `V` in full models
+- `--rstiefel-rscol`: optional `rscol` argument for `rstiefel::rmf.matrix.gibbs` when `D > 1`
 
 ### Kernel Types
 - `'isotropic_squared_exponential'`: Isotropic SE kernel (D=1)
@@ -289,6 +361,7 @@ python test_data_generation.py
 2. **Explore run_multichains.ipynb** for interactive examples
 3. **Check folder-specific READMEs**:
    - `Data Generation/README.md` - Data generation
+   - `Application_Data/README.md` - Application-data runner
    - `Covariance Functions/README.md` - Kernel functions
    - `Parameter Sampler/README.md` - MCMC sampling
    - `Gibbs Sampling/README.md` - Layer-wise sampling
@@ -358,6 +431,8 @@ print("RMSPE:", results['metrics_summary']['rmspe']['mean'])
 - **Main README**: `README.md`
 - **Notebook Interface**: `run_multichains.ipynb`
 - **Script Interface**: `run_multichains.py`
+- **Synthetic Runner**: `Data Generation/run_simulation.py`
+- **Application Runner**: `Application_Data/run_application.py`
 - **Examples**: `example_usage.py` (use `--mode data|mle|all`), with `example_mle_options.py` kept as a compatibility wrapper
 
 ## 📚 Citation
