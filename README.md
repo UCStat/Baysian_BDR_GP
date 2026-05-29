@@ -2,7 +2,7 @@
 
 A comprehensive Python framework for A Fully Bayesian Framework for Built-in Input Dimension Reduction and Gaussian Process Modeling with full MCMC inference.
 
-**For JUQ Paper:** All BIC computations correctly sum log-likelihoods across layers!
+
 
 ## 📁 Repository Structure
 
@@ -10,14 +10,21 @@ A comprehensive Python framework for A Fully Bayesian Framework for Built-in Inp
 
 ├── Data Generation/              # Synthetic data generation
 │   ├── Data_generation.py
-│   ├── run_simulation.py
 │   ├── __init__.py
 │   └── README.md
 │
-├── Application_Data/             # Real application datasets and runner
-│   ├── run_application.py
+├── Application_Data/             # Real application datasets
 │   ├── Elliptical_PDE/
 │   ├── Onera M6/
+│   └── README.md
+│
+├── Scripts/                      # Command-line experiment runners
+│   ├── run_simulation.py
+│   ├── run_application.py
+│   └── README.md
+│
+├── Run_Example/                  # Ready-to-edit example run scripts
+│   ├── run_one_case.py
 │   └── README.md
 │
 ├── Covariance Functions/         # Kernel implementations  
@@ -51,10 +58,6 @@ A comprehensive Python framework for A Fully Bayesian Framework for Built-in Inp
 │
 ├── run_multichains.py            # Main interface (full + preset configuration API)
 ├── run_multichains.ipynb         # Jupyter notebook interface
-├── verify_imports.py             # Import verification script
-│
-├── test_*.py                     # Test files
-├── example_*.py                  # Example scripts
 │
 ├── requirements.txt              # Dependencies
 ├── QUICKSTART.md                 # Quick start guide
@@ -78,9 +81,34 @@ pip install -r requirements.txt
 
 ### Running the Code
 
-You have two main interfaces:
+#### Paper-Style Replication
 
-#### Option 1: Jupyter Notebook (Recommended for Beginners)
+Use the ready-to-edit Case 1a wrapper when you want to reproduce the paper-style
+simulation outputs first:
+
+```bash
+python3 Run_Example/run_one_case.py
+```
+
+This calls `Scripts/run_simulation.py` with Case 1, one-dimensional input
+subspace, layers 1/2/3, `full`, `No_W_Selective`, and `W_Known` variants, and
+the MCMC settings used in the example file. Outputs are written under
+`simulation_outputs/`, including run folders, posterior summaries,
+time-complexity summaries, diagnostic plots, metric comparison tables, and
+`metric_boxplots_by_layer/`.
+
+To check the wrapper without launching the full 2000-iteration run:
+
+```bash
+python3 -m py_compile Run_Example/run_one_case.py
+```
+
+Edit `SAMPLE_SIZE`, `DATA_CASES`, and `DATA_DIMENSIONS` in
+`Run_Example/run_one_case.py` to run Case 1b, Case 2a, or Case 2b. See
+`Run_Example/README.md` for the exact settings and for application-data run
+examples.
+
+#### Other Option 1: Jupyter Notebook
 
 ```bash
 # Start Jupyter
@@ -100,7 +128,7 @@ The notebook provides:
 4. Run your analysis
 5. Review results
 
-#### Option 2: Python Script
+#### Other Option 2: Direct Python API
 
 ```python
 from run_multichains import run_multichain_analysis
@@ -127,10 +155,10 @@ results = run_multichain_analysis(
 
 # Access results
 print(results['convergence'])        # R-hat, Heidelberg-Welch
-print(results['metrics_summary'])    # RMSPE, NSME, CRPS, BIC, etc.
+print(results['metrics_summary'])    # RMSPE, NSME, CRPS, BIC, MLPPD, CP, ALCI, Score
 ```
 
-#### Option 3: Experiment Runners
+#### Other Option 3: Direct Experiment Runners
 
 Use the two runner scripts when you want complete repeated experiments rather
 than a single direct `run_multichain_analysis` call. Both runners use the same
@@ -145,19 +173,21 @@ Python with your own prepared arrays and configuration.
 
 | Script | Data source | Kernel | W variants | Summary file |
 | --- | --- | --- | --- | --- |
-| `Data Generation/run_simulation.py` | Synthetic Case 1/Case 2 from `Data_generation.py` | `isotropic_squared_exponential` by default | choose `full`, `W_Known`, `No_W`, `No_W_Selective` with `--w-variants`; `--include-w-variants` is a shortcut for all | `simulation_summary.csv` |
-| `Application_Data/run_application.py` | Real `Elliptical_PDE` and `Onera M6` data | `separable_matern32` for Elliptical_PDE; `separable_squared_exponential` for Onera | `full`, `No_W`, `No_W_Selective`; no `W_Known` because true `W` is unavailable | `application_summary.csv` |
+| `Scripts/run_simulation.py` | Synthetic Case 1/Case 2 from `Data_generation.py` | `isotropic_squared_exponential` by default; choose with `--kernel-type` | choose `full`, `W_Known`, `No_W`, `No_W_Selective` with `--w-variants`; `--include-w-variants` is a shortcut for all | `simulation_summary.csv` |
+| `Scripts/run_application.py` | Real `Elliptical_PDE` and `Onera M6` data | `separable_matern32` for Elliptical_PDE; `separable_squared_exponential` for Onera | `full`, `No_W`, `No_W_Selective`; no `W_Known` because true `W` is unavailable | `application_summary.csv` |
 
-Both runners expose `--posterior-dimensions`, `--layers`, `--n-chains`,
-`--n-iterations`, `--burn-in`, `--thin`, `--mv-sampler`, `--no-plots`, and
-`--no-save-samples`. Defaults are small enough for smoke tests; use larger
-iteration counts for real experiments. The scripts use `seed=42` and `thin=3`
-by default.
+Both runners expose `--posterior-dimensions`, `--variant-dimensions`,
+`--layers`, `--n-chains`, `--n-iterations`, `--burn-in`, `--thin`,
+`--mv-sampler`, `--no-plots`, and `--no-save-samples`. Defaults are small
+enough for smoke tests; use larger iteration counts for real experiments. The
+scripts use `seed=42` and `thin=3` by default.
 
 Important shared options:
 
 - `--posterior-dimensions`: reduced posterior dimension(s) `D` used by the BDR sampler.
+- `--variant-dimensions`: optional per-variant D grid using `VARIANT=D[,D...]`; variants not listed use `--posterior-dimensions`.
 - `--layers`: model depth(s), selected from `1`, `2`, and `3`.
+- `--kernel-type`: simulation-only covariance kernel. Choices are `isotropic_squared_exponential`, `separable_squared_exponential`, `isotropic_matern32`, and `separable_matern32`.
 - `--n-chains`: number of MCMC chains.
 - `--n-iterations`: MCMC iterations per chain.
 - `--burn-in`: number of iterations discarded before summaries.
@@ -176,6 +206,7 @@ Simulation-only options:
 - `--data-cases`: synthetic generator family, `case1` and/or `case2`.
 - `--data-dimensions`: true synthetic generator dimension, currently `1` and/or `2`.
 - `--w-variants`: choose specific simulation variants from `full`, `W_Known`, `No_W`, and `No_W_Selective`.
+- Simulation `--variant-dimensions` accepts `W_known` as an alias for `W_Known`, for example `full=1,2,3 No_W_Selective=1,2,3 W_known=1,2`.
 - `--include-w-variants`: shortcut flag that runs `full`, `W_Known`, `No_W`, and `No_W_Selective`.
 
 Application-only options:
@@ -184,18 +215,20 @@ Application-only options:
 - `--elliptical-outputs`: choose Elliptical_PDE output pairs `1` and/or `2`; output `1` uses `X_1.npy` and `Y_1.npy`.
 - `--onera-targets`: choose Onera response `lift`, `drag`, or both.
 - `--variants`: choose `full`, `No_W`, and/or `No_W_Selective`.
+- Application `--variant-dimensions` example: `full=1,2,3 No_W_Selective=1,2,3`.
 - `--train-fraction`: training fraction for the shuffled split; default is `0.8`.
 - `--max-rows`: optional row cap for smoke tests before the split.
 
 Synthetic simulation example:
 
 ```bash
-python "Data Generation/run_simulation.py" \
+python "Scripts/run_simulation.py" \
   --sample-size 200 \
   --data-cases case1 case2 \
   --data-dimensions 1 2 \
   --posterior-dimensions 1 2 \
   --layers 1 2 3 \
+  --kernel-type isotropic_squared_exponential \
   --n-chains 3 \
   --n-iterations 2000 \
   --burn-in 500 \
@@ -207,7 +240,7 @@ python "Data Generation/run_simulation.py" \
 Application-data example:
 
 ```bash
-python "Application_Data/run_application.py" \
+python "Scripts/run_application.py" \
   --applications elliptical_pde onera \
   --elliptical-outputs 1 2 \
   --onera-targets lift drag \
@@ -221,11 +254,24 @@ python "Application_Data/run_application.py" \
   --output-dir ./application_outputs
 ```
 
+Per-variant D grids can be supplied to either runner. For example, simulation
+runs can use `--variant-dimensions full=1,2,3 No_W_Selective=1,2,3 W_known=1,2`,
+while application runs can use
+`--variant-dimensions full=1,2,3 No_W_Selective=1,2,3`.
+
 Use `--mv-sampler rstiefel --rstiefel-rscol 2` with either runner to sample
 posterior `M` and `V` through the R `rstiefel` backend. Each run folder writes
 `config_used.json`, `initial_values_and_priors.npz`, `results_summary.json`,
-optional posterior samples, and optional diagnostic/metric plots. More detailed
-runner notes live in `Data Generation/README.md` and `Application_Data/README.md`.
+posterior and time-complexity summary tables, optional posterior samples,
+optional diagnostic/metric plots, top-level metric comparison tables, and
+per-layer metric model boxplots under `metric_boxplots_by_layer/`. Per-metric
+y-axis limits are shared across layers in those boxplots, and very small metric
+values use a scientific y-axis multiplier. ALCI, Score, BIC, and MLPPD use a
+symmetric-log y-axis scale; MLPPD also gets an additional unscaled linear plot.
+The same folder also includes grouped metric boxplots with layer 1, 2, and 3
+side by side in one figure. More detailed runner notes live in
+`Data Generation/README.md` and
+`Application_Data/README.md`.
 
 ### Quick Start Guide
 
@@ -381,6 +427,8 @@ All with **NumPy** and **TensorFlow** gradient implementations!
 | CRPS | Continuous Ranked Probability Score | Lower |
 | BIC | Bayesian Information Criterion | Higher |
 | MLPPD | Mean Log Pointwise Predictive Density | Higher |
+| CP | Coverage Probability | Closer to target coverage |
+| ALCI | Average Length of Credible Intervals | Lower for same coverage |
 | Score | Predictive Log-Likelihood | Higher |
 
 All metrics include: **mean, median, std, 95% credible intervals**
@@ -388,16 +436,14 @@ All metrics include: **mean, median, std, 95% credible intervals**
 ### Diagnostic Plots
 
 1. Trace plots
-2. Density plots with mean/median
-3. Histograms
-4. Autocorrelation plots
-5. W parameter traces (multi-chain)
-6. Actual vs. Predicted
-7. Convergence diagnostics table
-8. Metrics boxplots
-9. Metrics comparison table
-10. Single-layer RMSPE boxplot by dimension or method
-11. Grouped layer RMSPE boxplot by dimension or method
+2. Autocorrelation plots
+3. W parameter traces (multi-chain)
+4. Actual vs. Predicted
+5. Convergence diagnostics table
+6. Metrics boxplots
+7. Metrics comparison table (`GP (D) BDR` labels for full layer-1 BDR runs; `DGP 2-layer (D) BDR` and `DGP 3-layer (D) BDR` labels for full deeper BDR runs; Oracle labels for `W_Known` runs; `W/o` labels for `No_W_Selective` runs)
+8. Single-layer RMSPE boxplot by dimension or method
+9. Grouped layer RMSPE boxplot by dimension or method
 
 ## 📖 Documentation
 
@@ -409,6 +455,9 @@ All metrics include: **mean, median, std, 95% credible intervals**
 
 
 **Folder READMEs:**
+- [Run_Example/README.md](Run_Example/README.md)
+- [Scripts/README.md](Scripts/README.md)
+- [Application_Data/README.md](Application_Data/README.md)
 - [Data Generation/README.md](Data%20Generation/README.md)
 - [Covariance Functions/README.md](Covariance%20Functions/README.md)
 - [Parameter Sampler/README.md](Parameter%20Sampler/README.md)
@@ -427,7 +476,8 @@ The framework supports three types of models:
    - Example: `create_config_D1_L1()`, `create_config_D2_L2()`, etc.
 
 2. **Layer Variants**: Skip W, M, Lambda, V sampling
-   - Use when: W is known, or you don't need dimensionality reduction
+   - Use when: W is known, you want all columns of `X`, or you want fixed
+     selected columns of `X`
    - Example: `create_config_L1_W_Known()`, `create_config_L2_No_W()`, etc.
 
 3. **Custom Models**: Full control over all parameters
@@ -504,8 +554,8 @@ Layer variants are simplified models that skip W, M, Lambda, V sampling:
 
 **When to use variants:**
 - You have a known projection matrix W → Use `W_Known` variant
-- You don't need dimensionality reduction → Use `No_W` variant
-- You want to use selected columns of X → Use `No_W_Selective` variant
+- You do not need dimensionality reduction and want all columns of `X` → Use `No_W` variant
+- You want fixed column-selection reduction → Use `No_W_Selective` variant
 
 **Example:**
 ```python
@@ -550,8 +600,11 @@ Recommended workflow is:
 
 Variant-specific requirements:
 - `'W_Known'`: must pass `W_fixed` with shape `(p, D)`
+- `'No_W'`: uses all original input columns; changing `D` does not change the
+  model input
 - `'No_W_Selective'`: pass `D`; `column_indices` optional (`None` uses first `D` columns)
-- `Data Generation/run_simulation.py --w-variants ...` chooses specific simulation variants; `--include-w-variants` is a shortcut for all variants.
+- Runner `--variant-dimensions` lets each selected variant use its own D grid.
+- `Scripts/run_simulation.py --w-variants ...` chooses specific simulation variants; `--include-w-variants` is a shortcut for all variants.
 
 MLE flag combinations:
 - Full model, layer 1: `use_mle_tau2`, `use_mle_g`, `use_mle_theta`, `use_mle_all`
@@ -801,17 +854,15 @@ results = run_multichain_analysis(
    - Review performance metrics
    - Examine diagnostic plots
 
-## ✅ Testing
+## ✅ Sanity Checks
 
 ```bash
-# Verify all imports work
-python3 verify_imports.py
+# Check the example wrapper without running the full simulation
+python3 -m py_compile Run_Example/run_one_case.py
 
-# Run comprehensive tests
-python3 test_all_cases.py
-
-# Run data generation tests
-python3 test_data_generation.py
+# Confirm the command-line runners load and show their options
+python3 "Scripts/run_simulation.py" --help
+python3 "Scripts/run_application.py" --help
 
 ```
 

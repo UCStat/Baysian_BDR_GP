@@ -220,6 +220,10 @@ def compute_all_metrics_summary(y_true: np.ndarray, y_pred_samples: np.ndarray,
     rmspe_samples = np.array([compute_RMSPE(y_true, y_pred_samples[:, i]) for i in range(n_samples)])
     nsme_samples = np.array([compute_NSME(y_true, y_pred_samples[:, i]) for i in range(n_samples)])
     crps_samples = np.array([compute_CRPS(y_true, y_pred_samples[:, i], y_pred_std) for i in range(n_samples)])
+    score_samples = np.array([
+        compute_score(y_true, y_pred_samples[:, i], np.diag(np.maximum(y_pred_std**2, 1e-12)))
+        for i in range(n_samples)
+    ])
     
     # Compute MLPPD per sample
     mlppd_samples = np.array([compute_MLPPD(y_true, y_pred_samples[:, i], y_pred_std**2) for i in range(n_samples)])
@@ -253,6 +257,7 @@ def compute_all_metrics_summary(y_true: np.ndarray, y_pred_samples: np.ndarray,
         'rmspe': get_summary(rmspe_samples),
         'nsme': get_summary(nsme_samples),
         'crps': get_summary(crps_samples),
+        'score': get_summary(score_samples),
         'bic': get_summary(BIC_samples),
         'mlppd': get_summary(mlppd_samples),
         'cp': get_fixed_summary(cp),

@@ -22,17 +22,36 @@ pip install -r requirements.txt
 
 ### Step 1: Choose Your Interface
 
-**Option A: Jupyter Notebook (Recommended for Beginners)**
+**Main Option: Paper-Style Replication**
+
+Use the ready-to-edit Case 1a wrapper when you want to reproduce the
+paper-style simulation outputs first:
+
+```bash
+python3 Run_Example/run_one_case.py
+```
+
+To check the wrapper without launching the full 2000-iteration run:
+
+```bash
+python3 -m py_compile Run_Example/run_one_case.py
+```
+
+Edit `SAMPLE_SIZE`, `DATA_CASES`, and `DATA_DIMENSIONS` in
+`Run_Example/run_one_case.py` to run Case 1b, Case 2a, or Case 2b. See
+`Run_Example/README.md` for the exact settings and expected outputs.
+
+**Other Option 1: Jupyter Notebook**
 ```bash
 jupyter notebook run_multichains.ipynb
 ```
 
-**Option B: Python Script**
+**Other Option 2: Direct Python API**
 ```python
 from run_multichains import run_multichain_analysis
 ```
 
-**Option C: Experiment Runners (Command Line Batch Runs)**
+**Other Option 3: Direct Experiment Runners**
 
 Use the experiment runners when you want the repository to handle data loading,
 initialization, posterior sampling, diagnostics, metrics, plots, and summary
@@ -40,15 +59,15 @@ files for many combinations automatically.
 
 ```bash
 # Synthetic simulations from Data_generation.py
-python "Data Generation/run_simulation.py" --help
+python "Scripts/run_simulation.py" --help
 
 # Real application datasets
-python "Application_Data/run_application.py" --help
+python "Scripts/run_application.py" --help
 ```
 
-The runner scripts internally call `run_multichain_analysis`. You do not need
-to manually create a sampler or follow the direct Python examples below when
-using these command-line runners.
+The example wrapper and direct runner scripts internally call
+`run_multichain_analysis`. You do not need to manually create a sampler or
+follow the direct Python examples below when using these command-line runners.
 
 ### Step 2: Select Your Model
 
@@ -156,18 +175,30 @@ results = sampler.run_chains(Y_train, X_train, Y_test, X_test, verbose=True)
 print(results['convergence'])
 ```
 
-### Use Case 2: Experiment Runners
+### Use Case 2: Paper-Style Experiments and Runners
 
-Use `run_simulation.py` for synthetic Case 1/Case 2 experiments:
+Start with the Case 1a wrapper when you want to replicate the paper-style
+simulation workflow:
 
 ```bash
-python "Data Generation/run_simulation.py" \
+python3 Run_Example/run_one_case.py
+```
+
+The wrapper starts from Case 1a. Change `DATA_CASES`, `DATA_DIMENSIONS`, and
+`SAMPLE_SIZE` in that file for Case 1b, Case 2a, and Case 2b. See
+`Run_Example/README.md`.
+
+Other direct runner option for synthetic Case 1/Case 2 experiments:
+
+```bash
+python "Scripts/run_simulation.py" \
   --sample-size 200 \
   --data-cases case1 case2 \
   --data-dimensions 1 2 \
-  --posterior-dimensions 1 2 \
   --layers 1 2 3 \
+  --kernel-type isotropic_squared_exponential \
   --w-variants full W_Known No_W No_W_Selective \
+  --variant-dimensions full=1,2,3 No_W_Selective=1,2,3 W_known=1,2 \
   --n-chains 3 \
   --n-iterations 2000 \
   --burn-in 500 \
@@ -175,16 +206,16 @@ python "Data Generation/run_simulation.py" \
   --output-dir ./simulation_outputs
 ```
 
-Use `run_application.py` for the real application datasets:
+Other direct runner option for the real application datasets:
 
 ```bash
-python "Application_Data/run_application.py" \
+python "Scripts/run_application.py" \
   --applications elliptical_pde onera \
   --elliptical-outputs 1 2 \
   --onera-targets lift drag \
-  --posterior-dimensions 1 2 \
   --layers 1 2 3 \
   --variants full No_W No_W_Selective \
+  --variant-dimensions full=1,2,3 No_W_Selective=1,2,3 \
   --n-chains 3 \
   --n-iterations 2000 \
   --burn-in 500 \
@@ -265,9 +296,10 @@ sampler = MultiChainSampler(
 - `column_indices`: Optional when `variant='No_W_Selective'` (`None` uses first `D` columns)
 
 ### Experiment Runner Options
-- Synthetic runner: `Data Generation/run_simulation.py`
-- Application runner: `Application_Data/run_application.py`
+- Synthetic runner: `Scripts/run_simulation.py`
+- Application runner: `Scripts/run_application.py`
 - `--posterior-dimensions`: one or more reduced dimensions `D`
+- `--variant-dimensions`: optional per-variant D grid using `VARIANT=D[,D...]`; variants not listed use `--posterior-dimensions`
 - `--layers`: one or more model depths, selected from `1`, `2`, and `3`
 - `--w-variants`: simulation-only selector for `full`, `W_Known`, `No_W`, `No_W_Selective`
 - `--include-w-variants`: simulation-only shortcut for all simulation variants
@@ -340,19 +372,17 @@ bic = metrics['bic']['mean']
 convergence = results['convergence']
 ```
 
-## 🧪 Testing
+## 🧪 Sanity Checks
 
-Run the comprehensive test suite:
+Run lightweight checks without launching a full MCMC experiment:
 
 ```bash
-# Test all cases (2 samples each for quick verification)
-python test_all_cases.py
+# Check the Case 1a wrapper syntax
+python3 -m py_compile Run_Example/run_one_case.py
 
-# Verify 2-sample configuration
-python verify_2_samples.py
-
-# Test data generation
-python test_data_generation.py
+# Confirm the command-line runners load and show their options
+python3 "Scripts/run_simulation.py" --help
+python3 "Scripts/run_application.py" --help
 ```
 
 ## 📖 Next Steps
@@ -431,9 +461,9 @@ print("RMSPE:", results['metrics_summary']['rmspe']['mean'])
 - **Main README**: `README.md`
 - **Notebook Interface**: `run_multichains.ipynb`
 - **Script Interface**: `run_multichains.py`
-- **Synthetic Runner**: `Data Generation/run_simulation.py`
-- **Application Runner**: `Application_Data/run_application.py`
-- **Examples**: `example_usage.py` (use `--mode data|mle|all`), with `example_mle_options.py` kept as a compatibility wrapper
+- **Run Examples**: `Run_Example/README.md`
+- **Synthetic Runner**: `Scripts/run_simulation.py`
+- **Application Runner**: `Scripts/run_application.py`
 
 ## 📚 Citation
 
@@ -451,4 +481,5 @@ If you use this repository, please cite the JUQ paper:
 
 ---
 
-**Ready to go?** Start with `run_multichains.ipynb` for the easiest experience!
+**Ready to go?** Start with `python3 Run_Example/run_one_case.py` for the
+paper-style simulation example.

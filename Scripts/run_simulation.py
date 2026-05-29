@@ -27,7 +27,7 @@ import json
 import sys
 import traceback
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -65,6 +65,12 @@ from BDR_plot import (  # type: ignore[import]
     plot_metrics_comparison_table,
     plot_trace,
 )
+from BDR_summaries import (  # type: ignore[import]
+    model_label_for_run,
+    write_layer_metric_boxplots,
+    write_metrics_comparison_tables,
+    write_run_summary_tables,
+)
 from run_multichains import (  # type: ignore[import]
     CONFIG_FUNCTIONS,
     get_config_for,
@@ -82,6 +88,12 @@ from run_multichains import (  # type: ignore[import]
 # - "isotropic_matern32"
 # - "separable_matern32"
 KERNEL_TYPE = "isotropic_squared_exponential"
+KERNEL_CHOICES = (
+    "isotropic_squared_exponential",
+    "separable_squared_exponential",
+    "isotropic_matern32",
+    "separable_matern32",
+)
 
 # Prior and initialization values requested for every run. These constants are
 # passed into both full BDR models and W-not-sampled variants so the comparison
@@ -117,6 +129,11 @@ DIAGNOSTIC_SAMPLE_KEYS = (
     ("tau2_r", ("tau2_r",)),
     ("g_r", ("g_r",)),
     ("theta_r", ("theta_r",)),
+    ("Lambda", ("Lambda",)),
+    ("M", ("M",)),
+    ("V", ("V",)),
+    ("Q", ("Q",)),
+    ("R", ("R",)),
 )
 
 DATA_GENERATORS = {
@@ -197,6 +214,16 @@ def parse_args() -> argparse.Namespace:
         help="Model depth(s) to run: 1, 2, and/or 3.",
     )
     parser.add_argument(
+        "--kernel-type",
+        choices=KERNEL_CHOICES,
+        default=KERNEL_TYPE,
+        help=(
+            "Covariance kernel used for all synthetic simulation runs. "
+            "Choices: isotropic_squared_exponential, separable_squared_exponential, "
+            "isotropic_matern32, separable_matern32."
+        ),
+    )
+    parser.add_argument(
         "--mv-sampler",
         choices=["python", "rstiefel"],
         default="python",
@@ -236,6 +263,17 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--variant-dimensions",
+        nargs="+",
+        default=None,
+        metavar="VARIANT=D[,D...]",
+        help=(
+            "Optional per-variant posterior dimensions, for example "
+            "full=1,2,3 No_W_Selective=1,2,3 W_known=1,2. "
+            "Variants not listed here use --posterior-dimensions."
+        ),
+    )
+    parser.add_argument(
         "--parameter-diagnostics",
         action="store_true",
         help="Also attempt R/coda parameter diagnostics. Requires rpy2, R, and coda.",
@@ -248,6 +286,96 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--verbose", action="store_true", help="Print sampler progress.")
     parser.set_defaults(seed=42)
     return parser.parse_args()
+
+
+def canonical_variant_name(name: str) -> str:
+    """Normalize variant names used by --variant-dimensions."""
+    aliases = {
+        "full": "full",
+        "w_known": "W_Known",
+        "no_w": "No_W",
+        "no_w_selective": "No_W_Selective",
+    }
+    key = name.strip().lower()
+    if key not in aliases:
+        raise ValueError(
+            f"Unknown variant '{name}' in --variant-dimensions. "
+            f"Allowed variants: {', '.join(W_VARIANT_CHOICES)}."
+        )
+    return aliases[key]
+
+
+def parse_variant_dimensions(values: Optional[List[str]]) -> Dict[str, List[int]]:
+    """Parse --variant-dimensions entries into {variant: [D, ...]}."""
+    if not values:
+        return {}
+
+    entries: List[str] = []
+    current_entry: Optional[str] = None
+    for value in values:
+        if "=" in value:
+            if current_entry is not None:
+                entries.append(current_entry)
+            current_entry = value
+        elif current_entry is not None:
+            separator = "" if current_entry.rstrip().endswith(",") else ","
+            current_entry = f"{current_entry}{separator}{value}"
+        else:
+            entries.append(value)
+    if current_entry is not None:
+        entries.append(current_entry)
+
+    result: Dict[str, List[int]] = {}
+    for entry in entries:
+        if "=" not in entry:
+            raise ValueError(
+                "--variant-dimensions entries must use VARIANT=D[,D...] format, "
+                f"got '{entry}'."
+            )
+        variant_text, dims_text = entry.split("=", 1)
+        variant = canonical_variant_name(variant_text)
+        if variant in result:
+            raise ValueError(f"--variant-dimensions specifies variant '{variant}' more than once.")
+
+        dims: List[int] = []
+        for dim_text in dims_text.split(","):
+            dim_text = dim_text.strip()
+            if not dim_text:
+                raise ValueError(f"--variant-dimensions has an empty D value in '{entry}'.")
+            try:
+                dim = int(dim_text)
+            except ValueError as exc:
+                raise ValueError(f"--variant-dimensions value '{dim_text}' is not an integer.") from exc
+            if dim < 1:
+                raise ValueError("--variant-dimensions values must be positive integers.")
+            if dim in dims:
+                raise ValueError(f"--variant-dimensions repeats D={dim} for variant '{variant}'.")
+            dims.append(dim)
+
+        result[variant] = dims
+
+    return result
+
+
+def variant_dimension_pairs(
+    args: argparse.Namespace,
+    requested_variants: Sequence[Optional[str]],
+) -> List[Tuple[Optional[str], int]]:
+    """Return selected (variant, posterior_D) combinations in run order."""
+    variant_dimensions = getattr(args, "variant_dimensions_map", {})
+    if not variant_dimensions:
+        return [
+            (variant, posterior_D)
+            for posterior_D in args.posterior_dimensions
+            for variant in requested_variants
+        ]
+
+    pairs: List[Tuple[Optional[str], int]] = []
+    for variant in requested_variants:
+        variant_name = "full" if variant is None else variant
+        dims = variant_dimensions.get(variant_name, args.posterior_dimensions)
+        pairs.extend((variant, posterior_D) for posterior_D in dims)
+    return pairs
 
 
 # Validate that the requested run can produce at least one saved posterior sample.
@@ -280,6 +408,15 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--rstiefel-rscol must be a positive integer when provided.")
     if args.include_w_variants and args.w_variants is not None:
         raise ValueError("Use either --include-w-variants or --w-variants, not both.")
+    args.variant_dimensions_map = parse_variant_dimensions(args.variant_dimensions)
+    selected_variant_names = {"full" if variant is None else variant for variant in selected_w_variants(args)}
+    unselected = set(args.variant_dimensions_map) - selected_variant_names
+    if unselected:
+        names = ", ".join(sorted(unselected))
+        raise ValueError(
+            f"--variant-dimensions specified {names}, but those variants are not selected by --w-variants "
+            "or --include-w-variants."
+        )
 
 
 # Convert CLI W variant choices into internal variant values used by run_one.
@@ -343,7 +480,11 @@ def first_present(mapping: Mapping[str, Any], keys: Sequence[str]) -> Optional[A
 
 
 # Collect one sampled parameter from every chain and reshape it for plotting.
-def sample_chains_for_key(results: Mapping[str, Any], aliases: Sequence[str]) -> Optional[List[np.ndarray]]:
+def sample_chains_for_key(
+    results: Mapping[str, Any],
+    aliases: Sequence[str],
+    max_components: int = 12,
+) -> Optional[List[np.ndarray]]:
     """Extract one parameter across chains, flattening matrices for plots."""
     chains = []
     for samples in results.get("chains_samples", []):
@@ -355,8 +496,9 @@ def sample_chains_for_key(results: Mapping[str, Any], aliases: Sequence[str]) ->
             return None
         if arr.ndim == 0:
             arr = arr.reshape(1)
-        elif arr.ndim > 2:
+        elif arr.ndim > 1:
             arr = arr.reshape(arr.shape[0], -1)
+            arr = arr[:, :max_components]
         chains.append(arr)
     return chains or None
 
@@ -510,12 +652,14 @@ def write_aggregate_csv(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
         "posterior_D",
         "layer",
         "variant",
+        "kernel_type",
         "mv_sampler",
         "rstiefel_rscol",
         "status",
         "rmspe_mean",
         "nsme_mean",
         "crps_mean",
+        "score_mean",
         "bic_mean",
         "mlppd_mean",
         "cp_mean",
@@ -539,7 +683,7 @@ def aggregate_row(summary: Mapping[str, Any], status: str, error: str = "") -> D
 
     # Extract a metric mean while accepting lowercase full-model keys and uppercase variant keys.
     def metric_mean(name: str) -> Any:
-        metric = metrics.get(name, metrics.get(name.upper(), {}))
+        metric = metrics.get(name, metrics.get(name.upper(), metrics.get(name.capitalize(), {})))
         if isinstance(metric, Mapping):
             return metric.get("mean", "")
         return ""
@@ -550,12 +694,14 @@ def aggregate_row(summary: Mapping[str, Any], status: str, error: str = "") -> D
         "posterior_D": summary.get("posterior_D", summary.get("D")),
         "layer": summary.get("layer"),
         "variant": summary.get("variant", "full"),
+        "kernel_type": summary.get("kernel_type"),
         "mv_sampler": summary.get("mv_sampler", "python"),
         "rstiefel_rscol": summary.get("rstiefel_rscol"),
         "status": status,
         "rmspe_mean": metric_mean("rmspe"),
         "nsme_mean": metric_mean("nsme"),
         "crps_mean": metric_mean("crps"),
+        "score_mean": metric_mean("score"),
         "bic_mean": metric_mean("bic"),
         "mlppd_mean": metric_mean("mlppd"),
         "cp_mean": metric_mean("cp"),
@@ -614,7 +760,7 @@ def build_config(
             "n_iterations": args.n_iterations,
             "burn_in": args.burn_in,
             "thin": args.thin,
-            "kernel_type": KERNEL_TYPE,
+            "kernel_type": args.kernel_type,
             "mv_sampler": args.mv_sampler,
             "rstiefel_rscol": args.rstiefel_rscol,
             "use_mle_all": False,
@@ -679,7 +825,7 @@ def build_config(
         "n_iterations": args.n_iterations,
         "burn_in": args.burn_in,
         "thin": args.thin,
-        "kernel_type": KERNEL_TYPE,
+        "kernel_type": args.kernel_type,
         "mv_sampler": args.mv_sampler,
         "rstiefel_rscol": args.rstiefel_rscol,
         "W_init": init_values["W_init"],
@@ -809,7 +955,7 @@ def run_one(
     print(f"  dimensions: data_case={data_case}, data_dim={data_dim}, posterior_D={posterior_D}, layer={layer}")
     if variant:
         print(f"  variant: {variant}")
-    print(f"  kernel: {KERNEL_TYPE}, chains={args.n_chains}, iterations={args.n_iterations}")
+    print(f"  kernel: {args.kernel_type}, chains={args.n_chains}, iterations={args.n_iterations}")
     print(f"  M/V sampler: {args.mv_sampler}" + (f" (rscol={args.rstiefel_rscol})" if args.rstiefel_rscol else ""))
 
     results = run_multichain_analysis(
@@ -831,6 +977,16 @@ def run_one(
         config=config,
         data=data,
     )
+    summary["summary_tables"] = write_run_summary_tables(
+        results,
+        run_dir,
+        config,
+        n_train=int(data["n_train"]),
+        p=int(data["X_train"].shape[1]),
+        layer=layer,
+        variant=config.get("variant", "full") or "full",
+        write_pdf=not args.no_plots,
+    )
     write_json(run_dir / "results_summary.json", summary)
 
     if not args.no_plots:
@@ -839,7 +995,11 @@ def run_one(
             # normalizes those keys and writes diagnostics in the run folder.
             create_runner_diagnostics(results, data["y_test"], run_dir)
         plot_metrics_boxplot(results["chains_metrics"], save_path=str(run_dir / "metrics_boxplot.pdf"))
-        plot_metrics_comparison_table(results["metrics_summary"], save_path=str(run_dir / "metrics_summary_table.pdf"))
+        plot_metrics_comparison_table(
+            results["metrics_summary"],
+            save_path=str(run_dir / "metrics_summary_table.pdf"),
+            title=f"Performance Metrics Summary: {model_label_for_run(summary)}",
+        )
 
     return summary
 
@@ -854,77 +1014,80 @@ def main() -> int:
 
     rows: List[Dict[str, Any]] = []
     requested_variants = selected_w_variants(args)
+    selected_variant_dimensions = variant_dimension_pairs(args, requested_variants)
 
     for data_case in args.data_cases:
         for data_dim in args.data_dimensions:
-            for posterior_D in args.posterior_dimensions:
+            for variant, posterior_D in selected_variant_dimensions:
                 for layer in args.layers:
-                    for variant in requested_variants:
-                        partial_summary = {
-                            "data_case": data_case,
-                            "data_dim": data_dim,
-                            "posterior_D": posterior_D,
-                            "D": posterior_D,
-                            "layer": layer,
-                            "variant": variant or "full",
-                            "mv_sampler": args.mv_sampler,
-                            "rstiefel_rscol": args.rstiefel_rscol,
-                            "output_dir": str(
-                                args.output_dir
-                                / run_name_for(data_case, data_dim, posterior_D, layer, args.sample_size, variant)
+                    partial_summary = {
+                        "data_case": data_case,
+                        "data_dim": data_dim,
+                        "posterior_D": posterior_D,
+                        "D": posterior_D,
+                        "layer": layer,
+                        "variant": variant or "full",
+                        "kernel_type": args.kernel_type,
+                        "mv_sampler": args.mv_sampler,
+                        "rstiefel_rscol": args.rstiefel_rscol,
+                        "output_dir": str(
+                            args.output_dir
+                            / run_name_for(data_case, data_dim, posterior_D, layer, args.sample_size, variant)
+                        ),
+                        "computation_times": [],
+                        "metrics_summary": {},
+                    }
+                    if variant == "W_Known" and posterior_D != data_dim:
+                        error = (
+                            "Skipped W_Known because the true W from the data generator has "
+                            f"{data_dim} column(s), but posterior_D={posterior_D}. "
+                            "Use matching --data-dimensions and --posterior-dimensions for W_Known."
+                        )
+                        rows.append(aggregate_row(partial_summary, status="skipped", error=error))
+                        write_json(
+                            Path(partial_summary["output_dir"]) / "skipped.json",
+                            {"status": "skipped", "reason": error},
+                        )
+                        print(
+                            (
+                                f"\nSkipped data_case={data_case}, data_dim={data_dim}, "
+                                f"posterior_D={posterior_D}, layer={layer}, variant=W_Known: {error}"
                             ),
-                            "computation_times": [],
-                            "metrics_summary": {},
-                        }
-                        if variant == "W_Known" and posterior_D != data_dim:
-                            error = (
-                                "Skipped W_Known because the true W from the data generator has "
-                                f"{data_dim} column(s), but posterior_D={posterior_D}. "
-                                "Use matching --data-dimensions and --posterior-dimensions for W_Known."
-                            )
-                            rows.append(aggregate_row(partial_summary, status="skipped", error=error))
-                            write_json(
-                                Path(partial_summary["output_dir"]) / "skipped.json",
-                                {"status": "skipped", "reason": error},
-                            )
-                            print(
-                                (
-                                    f"\nSkipped data_case={data_case}, data_dim={data_dim}, "
-                                    f"posterior_D={posterior_D}, layer={layer}, variant=W_Known: {error}"
-                                ),
-                                file=sys.stderr,
-                            )
-                            continue
-                        try:
-                            summary = run_one(
-                                args,
-                                data_case=data_case,
-                                data_dim=data_dim,
-                                posterior_D=posterior_D,
-                                layer=layer,
-                                variant=variant,
-                            )
-                            rows.append(aggregate_row(summary, status="ok"))
-                        except Exception as exc:
-                            error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
-                            rows.append(aggregate_row(partial_summary, status="failed", error=error))
-                            write_json(
-                                Path(partial_summary["output_dir"]) / "error.json",
-                                {"error": error, "traceback": traceback.format_exc()},
-                            )
-                            print(
-                                (
-                                    f"\nFailed data_case={data_case}, data_dim={data_dim}, "
-                                    f"posterior_D={posterior_D}, layer={layer}, "
-                                    f"variant={variant or 'full'}: {error}"
-                                ),
-                                file=sys.stderr,
-                            )
-                            if not args.continue_on_error:
-                                write_aggregate_csv(args.output_dir / "simulation_summary.csv", rows)
-                                raise
+                            file=sys.stderr,
+                        )
+                        continue
+                    try:
+                        summary = run_one(
+                            args,
+                            data_case=data_case,
+                            data_dim=data_dim,
+                            posterior_D=posterior_D,
+                            layer=layer,
+                            variant=variant,
+                        )
+                        rows.append(aggregate_row(summary, status="ok"))
+                    except Exception as exc:
+                        error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+                        rows.append(aggregate_row(partial_summary, status="failed", error=error))
+                        write_json(
+                            Path(partial_summary["output_dir"]) / "error.json",
+                            {"error": error, "traceback": traceback.format_exc()},
+                        )
+                        print(
+                            (
+                                f"\nFailed data_case={data_case}, data_dim={data_dim}, "
+                                f"posterior_D={posterior_D}, layer={layer}, "
+                                f"variant={variant or 'full'}: {error}"
+                            ),
+                            file=sys.stderr,
+                        )
+                        if not args.continue_on_error:
+                            write_aggregate_csv(args.output_dir / "simulation_summary.csv", rows)
+                            raise
 
     write_aggregate_csv(args.output_dir / "simulation_summary.csv", rows)
+    write_metrics_comparison_tables(rows, args.output_dir, write_pdf=not args.no_plots)
+    write_layer_metric_boxplots(rows, args.output_dir, write_plots=not args.no_plots)
     print(f"\nSimulation summary written to: {args.output_dir / 'simulation_summary.csv'}")
     return 0
 

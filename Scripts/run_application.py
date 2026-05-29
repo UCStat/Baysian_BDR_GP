@@ -2,7 +2,7 @@
 """
 Run BDR posterior sampling on application datasets.
 
-This script mirrors the workflow in `Data Generation/run_simulation.py`, but it
+This script mirrors the workflow in `Scripts/run_simulation.py`, but it
 loads real application data instead of generating synthetic Case 1/Case 2 data.
 
 Application datasets:
@@ -29,7 +29,7 @@ import sys
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -56,6 +56,12 @@ for folder in [
 from BDR_plot import (  # type: ignore[import]
     plot_metrics_boxplot,
     plot_metrics_comparison_table,
+)
+from BDR_summaries import (  # type: ignore[import]
+    model_label_for_run,
+    write_layer_metric_boxplots,
+    write_metrics_comparison_tables,
+    write_run_summary_tables,
 )
 from run_multichains import (  # type: ignore[import]
     CONFIG_FUNCTIONS,
@@ -165,6 +171,17 @@ def parse_args() -> argparse.Namespace:
         choices=list(APPLICATION_VARIANTS),
         help="Model variants to run. Use 'full' for W-sampled BDR.",
     )
+    parser.add_argument(
+        "--variant-dimensions",
+        nargs="+",
+        default=None,
+        metavar="VARIANT=D[,D...]",
+        help=(
+            "Optional per-variant posterior dimensions, for example "
+            "full=1,2,3 No_W_Selective=1,2. Variants not listed here use "
+            "--posterior-dimensions."
+        ),
+    )
     parser.add_argument("--n-chains", type=int, default=3, help="Number of MCMC chains.")
     parser.add_argument("--n-iterations", type=int, default=6, help="MCMC iterations per chain.")
     parser.add_argument("--burn-in", type=int, default=2, help="Burn-in iterations.")
@@ -216,6 +233,81 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def parse_variant_dimensions(values: Optional[List[str]]) -> Dict[str, List[int]]:
+    """Parse --variant-dimensions entries into {variant: [D, ...]}."""
+    if not values:
+        return {}
+
+    entries: List[str] = []
+    current_entry: Optional[str] = None
+    for value in values:
+        if "=" in value:
+            if current_entry is not None:
+                entries.append(current_entry)
+            current_entry = value
+        elif current_entry is not None:
+            separator = "" if current_entry.rstrip().endswith(",") else ","
+            current_entry = f"{current_entry}{separator}{value}"
+        else:
+            entries.append(value)
+    if current_entry is not None:
+        entries.append(current_entry)
+
+    result: Dict[str, List[int]] = {}
+    valid_variants = set(APPLICATION_VARIANTS)
+    for entry in entries:
+        if "=" not in entry:
+            raise ValueError(
+                "--variant-dimensions entries must use VARIANT=D[,D...] format, "
+                f"got '{entry}'."
+            )
+        variant, dims_text = entry.split("=", 1)
+        variant = variant.strip()
+        if variant not in valid_variants:
+            raise ValueError(
+                f"--variant-dimensions contains unknown variant '{variant}'. "
+                f"Allowed variants: {', '.join(APPLICATION_VARIANTS)}."
+            )
+        if variant in result:
+            raise ValueError(f"--variant-dimensions specifies variant '{variant}' more than once.")
+
+        dims: List[int] = []
+        for dim_text in dims_text.split(","):
+            dim_text = dim_text.strip()
+            if not dim_text:
+                raise ValueError(f"--variant-dimensions has an empty D value in '{entry}'.")
+            try:
+                dim = int(dim_text)
+            except ValueError as exc:
+                raise ValueError(f"--variant-dimensions value '{dim_text}' is not an integer.") from exc
+            if dim < 1:
+                raise ValueError("--variant-dimensions values must be positive integers.")
+            if dim in dims:
+                raise ValueError(f"--variant-dimensions repeats D={dim} for variant '{variant}'.")
+            dims.append(dim)
+
+        result[variant] = dims
+
+    return result
+
+
+def variant_dimension_pairs(args: argparse.Namespace) -> List[Tuple[str, int]]:
+    """Return the selected (variant, posterior_D) combinations in run order."""
+    variant_dimensions = getattr(args, "variant_dimensions_map", {})
+    if not variant_dimensions:
+        return [
+            (variant, posterior_D)
+            for posterior_D in args.posterior_dimensions
+            for variant in args.variants
+        ]
+
+    pairs: List[Tuple[str, int]] = []
+    for variant in args.variants:
+        dims = variant_dimensions.get(variant, args.posterior_dimensions)
+        pairs.extend((variant, posterior_D) for posterior_D in dims)
+    return pairs
+
+
 # Validate command-line settings before any sampler is launched.
 def validate_args(args: argparse.Namespace) -> None:
     """Fail early for invalid dimensions, split settings, or MCMC settings."""
@@ -231,6 +323,13 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--n-iterations, --burn-in, and --thin must leave at least one saved sample.")
     if any(D < 1 for D in args.posterior_dimensions):
         raise ValueError("--posterior-dimensions values must be positive integers.")
+    args.variant_dimensions_map = parse_variant_dimensions(args.variant_dimensions)
+    unknown_selected = set(args.variant_dimensions_map) - set(args.variants)
+    if unknown_selected:
+        names = ", ".join(sorted(unknown_selected))
+        raise ValueError(
+            f"--variant-dimensions specified {names}, but those variants are not selected by --variants."
+        )
     if not 0.0 < args.train_fraction < 1.0:
         raise ValueError("--train-fraction must be between 0 and 1.")
     if args.max_rows is not None and args.max_rows < 8:
@@ -491,7 +590,7 @@ def run_name_for(
 # Extract a metric mean while accepting full-model and variant metric key styles.
 def metric_mean(metrics_summary: Mapping[str, Any], name: str) -> Any:
     """Read one metric mean from lowercase or uppercase metric summaries."""
-    metric = metrics_summary.get(name, metrics_summary.get(name.upper(), {}))
+    metric = metrics_summary.get(name, metrics_summary.get(name.upper(), metrics_summary.get(name.capitalize(), {})))
     if isinstance(metric, Mapping):
         return metric.get("mean", "")
     return ""
@@ -573,6 +672,7 @@ def aggregate_row(summary: Mapping[str, Any], status: str, error: str = "") -> D
         "rmspe_mean": metric_mean(metrics, "rmspe"),
         "nsme_mean": metric_mean(metrics, "nsme"),
         "crps_mean": metric_mean(metrics, "crps"),
+        "score_mean": metric_mean(metrics, "score"),
         "bic_mean": metric_mean(metrics, "bic"),
         "mlppd_mean": metric_mean(metrics, "mlppd"),
         "cp_mean": metric_mean(metrics, "cp"),
@@ -603,6 +703,7 @@ def write_application_csv(path: Path, rows: Iterable[Mapping[str, Any]]) -> None
         "rmspe_mean",
         "nsme_mean",
         "crps_mean",
+        "score_mean",
         "bic_mean",
         "mlppd_mean",
         "cp_mean",
@@ -705,13 +806,27 @@ def run_one(
         run_dir=run_dir,
         config=config,
     )
+    summary["summary_tables"] = write_run_summary_tables(
+        results,
+        run_dir,
+        config,
+        n_train=int(split["n_train"]),
+        p=int(split["X_train"].shape[1]),
+        layer=layer,
+        variant=variant,
+        write_pdf=not args.no_plots,
+    )
     write_json(run_dir / "results_summary.json", summary)
 
     if not args.no_plots:
         if variant != "full":
             create_runner_diagnostics(results, split["y_test"], run_dir)
         plot_metrics_boxplot(results["chains_metrics"], save_path=str(run_dir / "metrics_boxplot.pdf"))
-        plot_metrics_comparison_table(results["metrics_summary"], save_path=str(run_dir / "metrics_summary_table.pdf"))
+        plot_metrics_comparison_table(
+            results["metrics_summary"],
+            save_path=str(run_dir / "metrics_summary_table.pdf"),
+            title=f"Performance Metrics Summary: {model_label_for_run(summary)}",
+        )
 
     return summary
 
@@ -726,53 +841,55 @@ def main() -> int:
 
     datasets = load_application_datasets(args)
     rows: List[Dict[str, Any]] = []
+    selected_variant_dimensions = variant_dimension_pairs(args)
 
     for dataset in datasets:
-        for posterior_D in args.posterior_dimensions:
+        for variant, posterior_D in selected_variant_dimensions:
             for layer in args.layers:
-                for variant in args.variants:
-                    partial_summary = {
-                        "application": dataset.application,
-                        "target": dataset.target,
-                        "kernel_type": dataset.kernel_type,
-                        "posterior_D": posterior_D,
-                        "D": posterior_D,
-                        "layer": layer,
-                        "variant": variant,
-                        "mv_sampler": args.mv_sampler,
-                        "rstiefel_rscol": args.rstiefel_rscol,
-                        "output_dir": str(
-                            args.output_dir / run_name_for(dataset.application, dataset.target, posterior_D, layer, variant)
+                partial_summary = {
+                    "application": dataset.application,
+                    "target": dataset.target,
+                    "kernel_type": dataset.kernel_type,
+                    "posterior_D": posterior_D,
+                    "D": posterior_D,
+                    "layer": layer,
+                    "variant": variant,
+                    "mv_sampler": args.mv_sampler,
+                    "rstiefel_rscol": args.rstiefel_rscol,
+                    "output_dir": str(
+                        args.output_dir / run_name_for(dataset.application, dataset.target, posterior_D, layer, variant)
+                    ),
+                    "computation_times": [],
+                    "metrics_summary": {},
+                }
+                try:
+                    summary = run_one(
+                        args,
+                        dataset=dataset,
+                        posterior_D=posterior_D,
+                        layer=layer,
+                        variant=variant,
+                    )
+                    rows.append(aggregate_row(summary, status="ok"))
+                except Exception as exc:
+                    error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+                    rows.append(aggregate_row(partial_summary, status="failed", error=error))
+                    error_dir = Path(partial_summary["output_dir"])
+                    write_json(error_dir / "error.json", {"error": error, "traceback": traceback.format_exc()})
+                    print(
+                        (
+                            f"\nFailed application={dataset.application}, target={dataset.target}, "
+                            f"posterior_D={posterior_D}, layer={layer}, variant={variant}: {error}"
                         ),
-                        "computation_times": [],
-                        "metrics_summary": {},
-                    }
-                    try:
-                        summary = run_one(
-                            args,
-                            dataset=dataset,
-                            posterior_D=posterior_D,
-                            layer=layer,
-                            variant=variant,
-                        )
-                        rows.append(aggregate_row(summary, status="ok"))
-                    except Exception as exc:
-                        error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
-                        rows.append(aggregate_row(partial_summary, status="failed", error=error))
-                        error_dir = Path(partial_summary["output_dir"])
-                        write_json(error_dir / "error.json", {"error": error, "traceback": traceback.format_exc()})
-                        print(
-                            (
-                                f"\nFailed application={dataset.application}, target={dataset.target}, "
-                                f"posterior_D={posterior_D}, layer={layer}, variant={variant}: {error}"
-                            ),
-                            file=sys.stderr,
-                        )
-                        if not args.continue_on_error:
-                            write_application_csv(args.output_dir / "application_summary.csv", rows)
-                            raise
+                        file=sys.stderr,
+                    )
+                    if not args.continue_on_error:
+                        write_application_csv(args.output_dir / "application_summary.csv", rows)
+                        raise
 
     write_application_csv(args.output_dir / "application_summary.csv", rows)
+    write_metrics_comparison_tables(rows, args.output_dir, write_pdf=not args.no_plots)
+    write_layer_metric_boxplots(rows, args.output_dir, write_plots=not args.no_plots)
     print(f"\nApplication summary written to: {args.output_dir / 'application_summary.csv'}")
     return 0
 

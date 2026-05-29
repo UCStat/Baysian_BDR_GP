@@ -329,8 +329,11 @@ For multi-layer models, lengthscale priors differ by layer:
 ## When to Use Variants
 
 - **W_Known:** When you have a known projection matrix (e.g., from PCA)
-- **No_W:** When you don't need dimensionality reduction
-- **No_W_Selective:** When you want to use only selected columns of X
+- **No_W:** When you do not need dimensionality reduction and want to use all
+  columns of `X` directly
+- **No_W_Selective:** When you want fixed column-selection reduction using
+  `X[:, column_indices]`; if `D=p` and the default columns are used, this is
+  effectively the same input as `No_W`
 
 **Advantages:**
 - Faster sampling (skip W, M, V, Lambda)

@@ -15,7 +15,7 @@ This module implements multi-chain MCMC sampling with comprehensive convergence 
 
 - ✅ Multiple independent MCMC chains
 - ✅ Convergence diagnostics (Gelman-Rubin, Heidelberg-Welch)
-- ✅ Performance metrics (RMSPE, NSME, CRPS, BIC, MLPPD, Score)
+- ✅ Performance metrics (RMSPE, NSME, CRPS, BIC, MLPPD, CP, ALCI, Score)
 - ✅ Automated diagnostic plots
 - ✅ Posterior predictive inference
 - ✅ Support for full models and layer variants
@@ -172,17 +172,25 @@ All metrics include mean, median, std, and 95% credible intervals:
    - Integrates over all threshold levels
 
 4. **BIC** (Bayesian Information Criterion)
-   - Lower is better
+   - Higher is better in this repository's signed log-likelihood form
    - **Critical for JUQ paper:** Sums log-likelihoods across layers
    - Correctly handles D=1 and D>1 cases
-   - Formula: -2·(loglik_y + loglik_q + loglik_r) + k·log(n)
+   - Formula: `(loglik_y + loglik_q + loglik_r) - 0.5 * k * log(n)`
 
 5. **MLPPD** (Mean Log Pointwise Predictive Density)
    - Higher is better
    - Measures predictive distribution quality
    - Formula: (1/n_test) ∑ log N(y_true | y_pred_mean, y_pred_var)
 
-6. **Score** (Predictive Log-Likelihood)
+6. **CP** (Coverage Probability)
+   - Closer to nominal coverage is better
+   - Measures empirical predictive interval coverage
+
+7. **ALCI** (Average Length of Credible Intervals)
+   - Lower is better when coverage is comparable
+   - Measures predictive interval width
+
+8. **Score** (Predictive Log-Likelihood)
    - Higher is better
    - Overall model fit measure
    - Uses covariance of predictions across samples
@@ -193,17 +201,17 @@ The BIC is computed correctly for all layer configurations:
 
 **1-Layer:**
 ```
-BIC = -2·loglik_y + k·log(n)
+BIC = loglik_y - 0.5 * k * log(n)
 ```
 
 **2-Layer:**
 ```
-BIC = -2·(loglik_y + loglik_q) + k·log(n)
+BIC = (loglik_y + loglik_q) - 0.5 * k * log(n)
 ```
 
 **3-Layer:**
 ```
-BIC = -2·(loglik_y + loglik_q + loglik_r) + k·log(n)
+BIC = (loglik_y + loglik_q + loglik_r) - 0.5 * k * log(n)
 ```
 
 For D>1, latent layer log-likelihoods are summed across dimensions.
@@ -224,7 +232,8 @@ For variants, BIC computation adapts to sampled parameters only.
     ],
     'chains_metrics': [
         # Chain 1 metrics
-        {'RMSPE': float, 'NSME': float, 'CRPS': float, 'BIC': float, ...},
+        {'RMSPE': float, 'NSME': float, 'CRPS': float, 'BIC': float,
+         'MLPPD': float, 'CP': float, 'ALCI': float, 'Score': float, ...},
         # Chain 2 metrics
         ...
     ],
@@ -240,6 +249,8 @@ For variants, BIC computation adapts to sampled parameters only.
         'CRPS': {...},
         'BIC': {...},
         'MLPPD': {...},
+        'CP': {...},
+        'ALCI': {...},
         'Score': {...}
     },
     'computation_times': [time_chain1, time_chain2, ...],
@@ -255,10 +266,17 @@ The `create_all_diagnostics()` method generates:
 2. **Density plots** - Posterior distributions with mean/median (all chains combined)
 3. **Histograms** - Sample distributions
 4. **Autocorrelation plots** - Assess mixing
-5. **W trace plots** - Special handling for matrix W (full models only)
-6. **Actual vs. Predicted** - Model fit visualization
-7. **Metrics boxplots** - Performance comparison across chains
-8. **Convergence table** - R̂ and HW statistics
+5. **W diagnostics** - Trace, density, and autocorrelation plots for matrix W entries (full models only)
+6. **WWT diagnostics** - Trace, density, and autocorrelation plots for W W^T entries (full models only)
+7. **Lambda, M, V diagnostics** - Trace, density, and autocorrelation plots for full models
+8. **Q and R diagnostics** - Trace, density, and autocorrelation plots for latent layers
+9. **Actual vs. Predicted** - Model fit visualization
+10. **Metrics boxplots** - Performance comparison across chains
+11. **Convergence table** - R̂ and HW statistics
+
+High-dimensional matrices are flattened and limited to the first 12 entries
+for readability. Plots requested with `.png` paths are also saved as matching
+`.pdf` files.
 
 ## Layer-Dependent Parameters
 

@@ -342,6 +342,33 @@ def _sample_array(samples: Dict, *keys: str) -> np.ndarray:
     raise KeyError(f"None of the keys {keys} found in samples.")
 
 
+def _diagnostic_chains_for_keys(
+    chains_samples: List[Dict],
+    keys: Tuple[str, ...],
+    max_components: int = 12,
+) -> List[np.ndarray]:
+    """Flatten parameter chains for plotting, limiting high-dimensional arrays."""
+    chains = []
+    for samples in chains_samples:
+        arr = np.asarray(_sample_array(samples, *keys), dtype=float)
+        if arr.ndim == 0:
+            arr = arr.reshape(1)
+        elif arr.ndim > 1:
+            arr = arr.reshape(arr.shape[0], -1)
+            arr = arr[:, :max_components]
+        chains.append(arr)
+    return chains
+
+
+def _projection_chains_for_W(W_chains: List[np.ndarray], max_components: int = 12) -> List[np.ndarray]:
+    """Flatten W W^T projection chains for plotting."""
+    chains = []
+    for chain_W in W_chains:
+        chain_WWT = np.einsum('nkd,nld->nkl', np.asarray(chain_W, dtype=float), np.asarray(chain_W, dtype=float))
+        chains.append(chain_WWT.reshape(chain_WWT.shape[0], -1)[:, :max_components])
+    return chains
+
+
 # =============================================================================
 # Bayesian Metrics with Quantiles (D>1)
 # =============================================================================
@@ -1332,6 +1359,7 @@ class MultiChainSampler:
         all_rmspe = [m['rmspe'] for m in self.chains_metrics]
         all_nsme = [m['nsme'] for m in self.chains_metrics]
         all_crps = [m['crps'] for m in self.chains_metrics]
+        all_score = [m['score'] for m in self.chains_metrics]
         all_mlppd = [m['mlppd'] for m in self.chains_metrics]
         all_bic = [m['bic'] for m in self.chains_metrics]
         all_cp = [m['cp'] for m in self.chains_metrics]
@@ -1368,6 +1396,7 @@ class MultiChainSampler:
                 'rmspe': get_summary(all_rmspe),
                 'nsme': get_summary(all_nsme),
                 'crps': get_summary(all_crps),
+                'score': get_summary(all_score),
                 'bic': get_summary(all_bic),
                 'mlppd': get_summary(all_mlppd),
                 'cp': get_summary(all_cp),
@@ -1390,6 +1419,7 @@ class MultiChainSampler:
             plot_density as bdr_plot_density,
             plot_autocorrelation as bdr_plot_autocorrelation,
             plot_W_trace_multichain as bdr_plot_W_trace_multichain,
+            plot_W_projection_trace_multichain as bdr_plot_W_projection_trace_multichain,
             plot_actual_vs_predicted as bdr_plot_actual_vs_predicted,
         )
 
@@ -1410,6 +1440,15 @@ class MultiChainSampler:
                 ('g_r', ('g_r',)),
                 ('theta_r', ('theta_r',)),
             ])
+        component_parameter_specs = [
+            ('Lambda', ('Lambda',)),
+            ('M', ('M',)),
+            ('V', ('V',)),
+        ]
+        if self.layer >= 2:
+            component_parameter_specs.append(('Q', ('Q',)))
+        if self.layer >= 3:
+            component_parameter_specs.append(('R', ('R',)))
 
         for param_name, keys in parameter_specs:
             chains = [_sample_array(s, *keys) for s in self.chains_samples]
@@ -1420,10 +1459,27 @@ class MultiChainSampler:
                 param_name,
                 save_path=f'{output_dir}/acf_{param_name}_D{self.D}.png'
             )
+
+        for param_name, keys in component_parameter_specs:
+            chains = _diagnostic_chains_for_keys(self.chains_samples, keys)
+            bdr_plot_trace(chains, param_name, f'{output_dir}/trace_{param_name}_D{self.D}.png')
+            bdr_plot_density(chains, param_name, f'{output_dir}/density_{param_name}_D{self.D}.png')
+            bdr_plot_autocorrelation(
+                chains[0],
+                param_name,
+                save_path=f'{output_dir}/acf_{param_name}_D{self.D}.png'
+            )
         
         # W trace
         W_chains = [s['W'] for s in self.chains_samples]
+        W_component_chains = _diagnostic_chains_for_keys(self.chains_samples, ('W',))
+        WWT_component_chains = _projection_chains_for_W(W_chains)
         bdr_plot_W_trace_multichain(W_chains, save_path=f'{output_dir}/trace_W_D{self.D}.png')
+        bdr_plot_W_projection_trace_multichain(W_chains, save_path=f'{output_dir}/trace_WWT_D{self.D}.png')
+        bdr_plot_density(W_component_chains, 'W', save_path=f'{output_dir}/density_W_D{self.D}.png')
+        bdr_plot_autocorrelation(W_component_chains[0], 'W', save_path=f'{output_dir}/acf_W_D{self.D}.png')
+        bdr_plot_density(WWT_component_chains, 'WWT', save_path=f'{output_dir}/density_WWT_D{self.D}.png')
+        bdr_plot_autocorrelation(WWT_component_chains[0], 'WWT', save_path=f'{output_dir}/acf_WWT_D{self.D}.png')
         
         # Predictions
         metrics = self.chains_metrics[0]

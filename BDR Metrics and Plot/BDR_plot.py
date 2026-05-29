@@ -12,9 +12,10 @@ This module contains all plotting functions for diagnostics and visualization:
     - Single and grouped layer boxplots by dimension/method
 """
 
-import os
+from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import ScalarFormatter
 import seaborn as sns
 from scipy.stats import gaussian_kde
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
@@ -25,7 +26,17 @@ def _dimension_sort_key(dimension: Any):
     try:
         return (0, int(dimension))
     except (TypeError, ValueError):
-        return (1, str(dimension))
+        dimension_text = str(dimension)
+        if "-" in dimension_text:
+            prefix, suffix = dimension_text.split("-", 1)
+            try:
+                prefix_number = int(prefix)
+            except ValueError:
+                pass
+            else:
+                suffix_order = {"BDR": 0, "W/o": 1, "Oracle": 2, "No_W": 3}
+                return (1, suffix_order.get(suffix, 99), prefix_number, suffix)
+        return (2, dimension_text)
 
 
 def _mapping_get(mapping: Mapping, key: Any):
@@ -43,6 +54,99 @@ def _mapping_get(mapping: Mapping, key: Any):
         return None
 
     return mapping.get(key_int)
+
+
+def _save_plot(save_path: Optional[str], dpi: int = 300, bbox_inches: str = 'tight') -> None:
+    """Save the current figure and add a PDF copy for non-PDF outputs."""
+    if not save_path:
+        return
+
+    path = Path(save_path)
+    if path.parent != Path("."):
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+    plt.savefig(path, dpi=dpi, bbox_inches=bbox_inches)
+    if path.suffix.lower() != ".pdf":
+        plt.savefig(path.with_suffix(".pdf"), bbox_inches=bbox_inches)
+
+
+def _finite_plot_values(values: Sequence[Any]) -> np.ndarray:
+    finite_values = []
+    for value in values:
+        try:
+            array = np.asarray(value, dtype=float).reshape(-1)
+        except (TypeError, ValueError):
+            continue
+        array = array[np.isfinite(array)]
+        if array.size:
+            finite_values.append(array)
+
+    if not finite_values:
+        return np.asarray([], dtype=float)
+    return np.concatenate(finite_values)
+
+
+def _apply_small_value_yaxis_scale(
+    ax,
+    values: Sequence[Any],
+    *,
+    ylim: Optional[Tuple[float, float]] = None,
+    threshold: float = 1e-2,
+    fontsize: int = 14,
+) -> None:
+    """Use a math-text scientific y-axis multiplier for very small values."""
+    scale_values = list(values)
+    if ylim is not None:
+        scale_values.append(ylim)
+
+    finite = _finite_plot_values(scale_values)
+    if finite.size == 0:
+        return
+
+    max_abs = float(np.max(np.abs(finite)))
+    if max_abs == 0 or max_abs >= threshold:
+        return
+
+    formatter = ScalarFormatter(useMathText=True)
+    formatter.set_scientific(True)
+    formatter.set_powerlimits((0, 0))
+    ax.yaxis.set_major_formatter(formatter)
+    ax.yaxis.set_offset_position("left")
+    ax.yaxis.get_offset_text().set_fontsize(fontsize)
+
+
+def _infer_symlog_linthresh(values: Sequence[Any]) -> float:
+    finite = np.abs(_finite_plot_values(values))
+    finite = finite[finite > 0]
+    if finite.size == 0:
+        return 1.0
+
+    min_abs = float(np.min(finite))
+    max_abs = float(np.max(finite))
+    return max(min_abs / 10.0, max_abs * 1e-6, np.finfo(float).tiny)
+
+
+def _apply_yaxis_scale(
+    ax,
+    values: Sequence[Any],
+    *,
+    yscale: str = "linear",
+    symlog_linthresh: Optional[float] = None,
+    ylim: Optional[Tuple[float, float]] = None,
+    fontsize: int = 14,
+) -> None:
+    scale_values = list(values)
+    if ylim is not None:
+        scale_values.append(ylim)
+
+    if (yscale or "linear").lower() == "symlog":
+        linthresh = symlog_linthresh
+        if linthresh is None or not np.isfinite(linthresh) or linthresh <= 0:
+            linthresh = _infer_symlog_linthresh(scale_values)
+        ax.set_yscale("symlog", linthresh=linthresh)
+        return
+
+    _apply_small_value_yaxis_scale(ax, values, ylim=ylim, fontsize=fontsize)
 
 
 def plot_trace(chains: List[np.ndarray], param_name: str, save_path: Optional[str] = None):
@@ -78,8 +182,7 @@ def plot_trace(chains: List[np.ndarray], param_name: str, save_path: Optional[st
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    _save_plot(save_path)
     plt.close()
 
 
@@ -132,8 +235,7 @@ def plot_density(chains: List[np.ndarray], param_name: str, save_path: Optional[
         
         plt.suptitle(f'Posterior Density: {param_name}', fontsize=16, fontweight='bold')
         plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        _save_plot(save_path)
         plt.close()
     else:
         # Scalar parameter
@@ -168,8 +270,7 @@ def plot_density(chains: List[np.ndarray], param_name: str, save_path: Optional[
         ax.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        _save_plot(save_path)
         plt.close()
 
 
@@ -204,8 +305,7 @@ def plot_histogram(chains: List[np.ndarray], param_name: str, save_path: Optiona
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    _save_plot(save_path)
     plt.close()
 
 
@@ -249,8 +349,7 @@ def plot_autocorrelation(chain: np.ndarray, param_name: str, max_lag: int = 50,
         
         plt.suptitle(f'Autocorrelation: {param_name}', fontsize=16, fontweight='bold')
         plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        _save_plot(save_path)
         plt.close()
     else:
         # Scalar
@@ -276,8 +375,7 @@ def plot_autocorrelation(chain: np.ndarray, param_name: str, max_lag: int = 50,
         ax.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        _save_plot(save_path)
         plt.close()
 
 
@@ -324,49 +422,146 @@ def plot_W_trace_multichain(chains_W: List[np.ndarray], save_path: Optional[str]
     plt.suptitle(f'Trace Plots: W Matrix ({p}×{D}, showing first {n_plots})', 
                 fontsize=14, fontweight='bold')
     plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    _save_plot(save_path)
     plt.close()
 
 
-def plot_actual_vs_predicted(y_true: np.ndarray, y_pred: np.ndarray,
-                             ci_bounds: np.ndarray, save_path: Optional[str] = None):
+def plot_W_projection_trace_multichain(chains_W: List[np.ndarray], save_path: Optional[str] = None):
     """
-    Actual vs predicted scatter plot with confidence intervals.
-    
+    Trace plot for W W^T projection matrix entries across multiple chains.
+
     Args:
-        y_true: True values (n,)
-        y_pred: Predicted values (n,)
-        ci_bounds: Confidence interval bounds (n, 2) - [lower, upper]
-        save_path: Path to save figure
+        chains_W: List of W chains, each (n_samples, p, D)
+        save_path: Save path
     """
-    fig, ax = plt.subplots(figsize=(10, 10))
-    
-    # Error bars
-    errors = np.array([
-        y_pred - ci_bounds[:, 0],
-        ci_bounds[:, 1] - y_pred
-    ])
-    
-    ax.errorbar(y_true, y_pred, yerr=errors, fmt='o', alpha=0.5, 
-               capsize=3, markersize=6, ecolor='gray', markerfacecolor='blue')
-    
-    # Identity line (perfect prediction)
-    min_val = min(y_true.min(), y_pred.min())
-    max_val = max(y_true.max(), y_pred.max())
-    ax.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Perfect prediction')
-    
-    ax.set_xlabel('Actual', fontsize=14)
-    ax.set_ylabel('Predicted', fontsize=14)
-    ax.set_title('Predicted vs Actual with 95% CI', fontsize=16, fontweight='bold')
-    ax.legend(fontsize=12)
-    ax.grid(True, alpha=0.3)
-    ax.set_aspect('equal')
-    
+    p = chains_W[0].shape[1]
+    n_plots = min(p * p, 12)  # Limit to 12 plots for readability
+
+    fig, axes = plt.subplots(n_plots, 1, figsize=(12, 2*n_plots))
+    if n_plots == 1:
+        axes = [axes]
+
+    colors = ['black', 'blue', 'red', 'green', 'purple']
+    chains_WWT = [np.einsum('nkd,nld->nkl', chain_W, chain_W) for chain_W in chains_W]
+
+    idx = 0
+    for i in range(p):
+        for j in range(p):
+            if idx >= n_plots:
+                break
+
+            ax = axes[idx]
+
+            for chain_id, chain_WWT in enumerate(chains_WWT):
+                WWT_ij = chain_WWT[:, i, j]
+                ax.plot(WWT_ij, color=colors[chain_id % len(colors)],
+                        alpha=0.7, linewidth=0.8, label=f'Chain {chain_id+1}')
+
+            ax.set_ylabel(f'WWT_{i+1}{j+1}', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            if idx == 0:
+                ax.legend(fontsize=8, ncol=len(chains_W))
+
+            idx += 1
+        if idx >= n_plots:
+            break
+
+    axes[-1].set_xlabel('Iteration', fontsize=12)
+    plt.suptitle(f'Trace Plots: W W^T Matrix ({p}x{p}, showing first {n_plots})',
+                 fontsize=14, fontweight='bold')
     plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    _save_plot(save_path)
     plt.close()
+
+
+# def plot_actual_vs_predicted(y_true: np.ndarray, y_pred: np.ndarray,
+#                              ci_bounds: np.ndarray, save_path: Optional[str] = None):
+#     """
+#     Actual vs predicted scatter plot with confidence intervals.
+#
+#     Args:
+#         y_true: True values (n,)
+#         y_pred: Predicted values (n,)
+#         ci_bounds: Confidence interval bounds (n, 2) - [lower, upper]
+#         save_path: Path to save figure
+#     """
+#     fig, ax = plt.subplots(figsize=(10, 10))
+#
+#     # Error bars
+#     errors = np.array([
+#         y_pred - ci_bounds[:, 0],
+#         ci_bounds[:, 1] - y_pred
+#     ])
+#
+#     ax.errorbar(y_true, y_pred, yerr=errors, fmt='o', alpha=0.5,
+#                capsize=3, markersize=6, ecolor='gray', markerfacecolor='blue')
+#
+#     # Identity line (perfect prediction)
+#     min_val = min(y_true.min(), y_pred.min())
+#     max_val = max(y_true.max(), y_pred.max())
+#     ax.plot([min_val, max_val], [min_val, max_val], 'r--', linewidth=2, label='Perfect prediction')
+#
+#     ax.set_xlabel('Actual', fontsize=14)
+#     ax.set_ylabel('Predicted', fontsize=14)
+#     ax.set_title('Predicted vs Actual with 95% CI', fontsize=16, fontweight='bold')
+#     ax.legend(fontsize=12)
+#     ax.grid(True, alpha=0.3)
+#     ax.set_aspect('equal')
+#
+#     plt.tight_layout()
+#     _save_plot(save_path)
+#     plt.close()
+
+
+def plot_actual_vs_predicted(
+    actual_y,
+    predicted_y,
+    training_confidence_interval_bounds,
+    title=None,
+    xlabel="Actual",
+    ylabel="Predicted",
+    ax=None,
+    save_path: Optional[str] = None,
+):
+    actual_y = np.asarray(actual_y).reshape(-1)
+    predicted_y = np.asarray(predicted_y).reshape(-1)
+    training_confidence_interval_bounds = np.asarray(training_confidence_interval_bounds)
+
+    predicted_col = predicted_y.reshape(-1, 1)
+    errors = np.concatenate(
+        (
+            predicted_col - training_confidence_interval_bounds[:, 0:1],
+            training_confidence_interval_bounds[:, 1:2] - predicted_col,
+        ),
+        axis=1,
+    ).T
+
+    mmin = min(np.min(actual_y), np.min(predicted_y))
+    mmax = max(np.max(actual_y), np.max(predicted_y))
+    padding = (mmax - mmin) * 0.1
+    bounds = [mmin - padding, mmax + padding]
+
+    created_ax = ax is None
+    if ax is None:
+        _, ax = plt.subplots(1, 1)
+
+    ax.errorbar(actual_y, predicted_y, yerr=errors, fmt="o", alpha=0.2)
+
+    ax.set_title("Predicted vs. Actual (Training)")
+    ax.plot(bounds, bounds, "--")
+    ax.set_aspect(1.0)
+    ax.set_xlim(bounds)
+    ax.set_ylim(bounds)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+
+    ax.grid(True)
+    if title is not None:
+        ax.set_title(title)
+    plt.tight_layout()
+    _save_plot(save_path)
+    if created_ax:
+        plt.close()
 
 
 def plot_convergence_diagnostics(r_hats: dict, hw_results: dict, save_path: Optional[str] = None):
@@ -411,8 +606,7 @@ def plot_convergence_diagnostics(r_hats: dict, hw_results: dict, save_path: Opti
     ax2.grid(True, alpha=0.3, axis='y')
     
     plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    _save_plot(save_path)
     plt.close()
 
 
@@ -423,7 +617,10 @@ def plot_single_layer_by_dimension(
     save_path: Optional[str] = None,
     xlabel: str = "Method",
     ylabel: str = "RMSPE",
-    ylim: Optional[Tuple[float, float]] = (-0.01, 0.25),
+    facecolor: str = "skyblue",
+    ylim: Optional[Tuple[float, float]] = None,
+    yscale: str = "linear",
+    symlog_linthresh: Optional[float] = None,
     figsize: Tuple[float, float] = (12, 6),
     show: bool = False
 ):
@@ -438,7 +635,10 @@ def plot_single_layer_by_dimension(
         save_path: Optional path to save the figure
         xlabel: Label for the x-axis
         ylabel: Label for the y-axis
+        facecolor: Box fill color
         ylim: Optional y-axis limits; set to None for automatic scaling
+        yscale: Y-axis scale, either "linear" or "symlog"
+        symlog_linthresh: Optional linear threshold for symlog scaling
         figsize: Figure size
         show: Whether to display the plot interactively
     """
@@ -471,7 +671,7 @@ def plot_single_layer_by_dimension(
     ax.boxplot(
         data,
         patch_artist=True,
-        boxprops=dict(facecolor='skyblue', edgecolor='black'),
+        boxprops=dict(facecolor=facecolor, edgecolor='black'),
         medianprops=dict(color='black')
     )
 
@@ -483,17 +683,22 @@ def plot_single_layer_by_dimension(
     if ylim is not None:
         ax.set_ylim(*ylim)
 
+    _apply_yaxis_scale(
+        ax,
+        data,
+        yscale=yscale,
+        symlog_linthresh=symlog_linthresh,
+        ylim=ylim,
+        fontsize=26,
+    )
+
     ax.grid(axis='y', linestyle='--', alpha=0.7)
     ax.grid(axis='x', linestyle='--', alpha=0.7)
     ax.tick_params(axis='y', labelsize=26)
 
     plt.tight_layout()
 
-    if save_path:
-        save_dir = os.path.dirname(save_path)
-        if save_dir:
-            os.makedirs(save_dir, exist_ok=True)
-        plt.savefig(save_path, bbox_inches='tight')
+    _save_plot(save_path)
 
     if show:
         plt.show()
@@ -509,7 +714,9 @@ def plot_grouped_boxplot_by_dimension(
     colors: Optional[Sequence[str]] = None,
     xlabel: str = "Method",
     ylabel: str = "RMSPE",
-    ylim: Optional[Tuple[float, float]] = (-0.005, 0.35),
+    ylim: Optional[Tuple[float, float]] = None,
+    yscale: str = "linear",
+    symlog_linthresh: Optional[float] = None,
     figsize: Tuple[float, float] = (14, 6),
     group_spacing: float = 4.0,
     box_width: float = 0.5,
@@ -530,6 +737,8 @@ def plot_grouped_boxplot_by_dimension(
         xlabel: Label for the x-axis
         ylabel: Label for the y-axis
         ylim: Optional y-axis limits; set to None for automatic scaling
+        yscale: Y-axis scale, either "linear" or "symlog"
+        symlog_linthresh: Optional linear threshold for symlog scaling
         figsize: Figure size
         group_spacing: Distance between x-axis dimension/method groups
         box_width: Width of each boxplot
@@ -636,6 +845,15 @@ def plot_grouped_boxplot_by_dimension(
     if ylim is not None:
         ax.set_ylim(*ylim)
 
+    _apply_yaxis_scale(
+        ax,
+        data,
+        yscale=yscale,
+        symlog_linthresh=symlog_linthresh,
+        ylim=ylim,
+        fontsize=24,
+    )
+
     ax.tick_params(axis='y', labelsize=24)
     ax.grid(axis='y', linestyle='--', alpha=0.7)
     ax.grid(axis='x', linestyle='--', alpha=0.7)
@@ -661,11 +879,7 @@ def plot_grouped_boxplot_by_dimension(
 
     plt.tight_layout()
 
-    if save_path:
-        save_dir = os.path.dirname(save_path)
-        if save_dir:
-            os.makedirs(save_dir, exist_ok=True)
-        plt.savefig(save_path, bbox_inches='tight')
+    _save_plot(save_path)
 
     if show:
         plt.show()
@@ -687,6 +901,7 @@ def plot_metrics_boxplot(metrics_chains: List[dict], save_path: Optional[str] = 
         ('rmspe', 'RMSPE'),
         ('nsme', 'NSME'),
         ('crps', 'CRPS'),
+        ('score', 'Score'),
         ('mlppd', 'MLPPD'),
         ('bic', 'BIC'),
         ('cp', 'CP'),
@@ -717,14 +932,18 @@ def plot_metrics_boxplot(metrics_chains: List[dict], save_path: Optional[str] = 
         ax.grid(True, alpha=0.3, axis='y')
         ax.tick_params(axis='x', labelsize=12)
         ax.tick_params(axis='y', labelsize=12)
+        _apply_yaxis_scale(ax, data, fontsize=12)
     
     plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    _save_plot(save_path)
     plt.close()
 
 
-def plot_metrics_comparison_table(metrics_summary: dict, save_path: Optional[str] = None):
+def plot_metrics_comparison_table(
+    metrics_summary: dict,
+    save_path: Optional[str] = None,
+    title: str = 'Performance Metrics Summary'
+):
     """
     Create a visual table of metrics with mean, median, CI.
     
@@ -768,8 +987,7 @@ def plot_metrics_comparison_table(metrics_summary: dict, save_path: Optional[str
             if i % 2 == 0:
                 table[(i, j)].set_facecolor('#f0f0f0')
     
-    plt.title('Performance Metrics Summary', fontsize=16, fontweight='bold', pad=20)
+    plt.title(title, fontsize=16, fontweight='bold', pad=20)
     
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    _save_plot(save_path)
     plt.close()

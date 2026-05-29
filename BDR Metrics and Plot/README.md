@@ -6,6 +6,8 @@ This module provides all performance metrics and diagnostic plotting functions f
 
 - `BDR_metrics.py` - All performance metric computations
 - `BDR_plot.py` - All diagnostic plotting functions
+- `BDR_summaries.py` - Runner summary tables for posterior parameters,
+  sampling complexity, and aggregate metric comparisons
 - `__init__.py` - Package initialization
 
 ## Performance Metrics
@@ -37,7 +39,7 @@ nsme = compute_NSME(y_true, y_pred)
 ```python
 from BDR_metrics import compute_CRPS
 
-crps = compute_CRPS(y_true, y_pred_samples, y_pred_vars)
+crps = compute_CRPS(y_true, y_pred_mean, y_pred_std)
 ```
 - **Lower is better**
 - Measures calibration of probability forecasts
@@ -49,11 +51,11 @@ crps = compute_CRPS(y_true, y_pred_samples, y_pred_vars)
 ```python
 from BDR_metrics import compute_BIC
 
-bic = compute_BIC(log_likelihood, n_samples, n_parameters)
+bic = compute_BIC(log_likelihood, n_params, n_train)
 ```
-- **Lower is better**
+- **Higher is better**
 - Balances fit and complexity
-- Formula: -2·loglik + k·log(n)
+- Formula: `loglik - 0.5 * k * log(n)`
 - **Critical for JUQ paper:** For multi-layer models, sums log-likelihoods across layers
 - Correctly handles D=1 and D>1 cases
 
@@ -62,7 +64,7 @@ bic = compute_BIC(log_likelihood, n_samples, n_parameters)
 ```python
 from BDR_metrics import compute_MLPPD
 
-mlppd = compute_MLPPD(y_true, y_pred_samples, y_pred_vars)
+mlppd = compute_MLPPD(y_true, y_pred_mean, y_pred_var)
 ```
 - **Higher is better**
 - Measures predictive distribution quality
@@ -79,7 +81,29 @@ score = compute_score(y_true, y_pred_mean, y_pred_cov)
 - **Higher is better**
 - Overall model fit measure
 - Uses covariance matrix of predictions
-- Formula: -0.5·[n·log(2π) + log|Σ| + (y - μ)ᵀΣ⁻¹(y - μ)]
+- Formula: `-log|Sigma| - (y - y_pred)^T Sigma^-1 (y - y_pred)`
+
+### 7. CP (Coverage Probability)
+
+```python
+from BDR_metrics import compute_CP
+
+cp = compute_CP(y_true, lower_bound, upper_bound)
+```
+- **Closer to target coverage is better**
+- Measures empirical predictive interval coverage
+- Formula: `(1 / n_test) * sum(I(y_i in [l_i, u_i]))`
+
+### 8. ALCI (Average Length of Credible Intervals)
+
+```python
+from BDR_metrics import compute_ALCI
+
+alci = compute_ALCI(lower_bound, upper_bound)
+```
+- **Lower is better when coverage is comparable**
+- Measures average predictive interval width
+- Formula: `(1 / n_test) * sum(u_i - l_i)`
 
 ### Comprehensive Summary
 
@@ -88,15 +112,21 @@ from BDR_metrics import compute_all_metrics_summary
 
 metrics = compute_all_metrics_summary(
     y_true=y_test,
-    y_pred_samples=y_pred_samples,  # (n_samples, n_test)
-    y_pred_vars=y_pred_vars,        # (n_samples, n_test)
+    y_pred_samples=y_pred_samples,  # (n_test, n_samples)
     BIC_samples=bic_samples          # (n_samples,)
 )
 ```
 
-Returns all 6 metrics with summary statistics (mean, median, std, CI).
+Returns RMSPE, NSME, CRPS, BIC, MLPPD, CP, ALCI, Score with summary
+statistics (mean, median, std, CI).
 
 ## Diagnostic Plots
+
+When a plotting function receives a `.png` `save_path`, it saves that PNG and
+also writes a matching `.pdf` file with the same stem.
+The multichain runners use these functions for hyperparameters, `Lambda`,
+`M`, `V`, `Q`, `R`, `W`, and `W W^T`; high-dimensional arrays are flattened
+and limited to the first 12 entries in runner diagnostics.
 
 ### 1. Trace Plots
 
@@ -166,17 +196,22 @@ plot_autocorrelation(
 ### 5. W Trace Plots (Multi-Chain, Full Models Only)
 
 ```python
-from BDR_plot import plot_W_trace_multichain
+from BDR_plot import plot_W_trace_multichain, plot_W_projection_trace_multichain
 
 plot_W_trace_multichain(
     W_chains=[W_chain1, W_chain2, W_chain3],
     save_path='./W_trace.png'
 )
+
+plot_W_projection_trace_multichain(
+    W_chains=[W_chain1, W_chain2, W_chain3],
+    save_path='./WWT_trace.png'
+)
 ```
 - Special handling for projection matrix W
-- Shows all elements of W
+- Shows sampled W entries and W W^T projection entries
 - Multiple chains overlay
-- Useful for assessing W convergence
+- Useful for assessing W convergence and projection-space stability
 
 ### 6. Actual vs. Predicted
 
@@ -218,8 +253,8 @@ plot_convergence_diagnostics(
 from BDR_plot import plot_metrics_boxplot
 
 plot_metrics_boxplot(
-    metrics_dict=results['metrics_summary'],
-    output_dir='./diagnostics'
+    metrics_chains=results['chains_metrics'],
+    save_path='./diagnostics/metrics_boxplot.pdf'
 )
 ```
 - Compare metrics across chains
@@ -232,14 +267,29 @@ plot_metrics_boxplot(
 from BDR_plot import plot_metrics_comparison_table
 
 plot_metrics_comparison_table(
-    chains_metrics=results['chains_metrics'],
-    output_dir='./diagnostics'
+    metrics_summary=results['metrics_summary'],
+    save_path='./diagnostics/metrics_summary_table.pdf',
+    title='Performance Metrics Summary'
 )
 ```
 - Comprehensive metrics table
 - Includes mean, median, std, CI for all chains
 - Publication-ready format
-- Shows all 6 metrics
+- Shows RMSPE, NSME, CRPS, BIC, MLPPD, CP, ALCI, Score
+- Runner-level comparison tables label full layer-1 BDR models as
+  `GP (1) BDR`, `GP (2) BDR`, or `GP (3) BDR` according to posterior dimension
+- Runner-level comparison tables label full layer-2 BDR models as
+  `DGP 2-layer (1) BDR`, `DGP 2-layer (2) BDR`, or
+  `DGP 2-layer (3) BDR` according to posterior dimension
+- Runner-level comparison tables label full layer-3 BDR models as
+  `DGP 3-layer (1) BDR`, `DGP 3-layer (2) BDR`, or
+  `DGP 3-layer (3) BDR` according to posterior dimension
+- Runner-level comparison tables label `W_Known` Oracle models as
+  `GP (D) Oracle`, `DGP 2-layer (D) Oracle`, or
+  `DGP 3-layer (D) Oracle` according to layer and posterior dimension
+- Runner-level comparison tables label `No_W_Selective` models as
+  `GP (D) W/o`, `DGP 2-layer (D) W/o`, or `DGP 3-layer (D) W/o`
+  according to layer and posterior dimension
 
 ### 10. Single Layer Boxplot by Dimension or Method
 
@@ -252,12 +302,14 @@ plot_single_layer_by_dimension(
     layer=3,
     save_path='./plot/1d_rmse_480_l3.pdf',
     xlabel='Method',
-    ylabel='RMSPE',
-    ylim=(-0.01, 0.25)
+    ylabel='RMSPE'
 )
 ```
 - Expects nested score data: `{dimension_or_method: {sample_size: {layer: scores}}}`
 - Compares one layer and sample size across dimensions or method labels
+- Uses automatic y-axis scaling unless `ylim=(lower, upper)` is supplied
+- Very small y-axis values use a math-text scientific multiplier above the axis
+- Pass `yscale='symlog'` for metrics that need symmetric-log y-axis scaling
 - Automatically creates the output directory when `save_path` is provided
 - Use `show=True` to display the plot interactively, or `ylim=None` to use automatic y-axis scaling
 
@@ -270,13 +322,16 @@ plot_grouped_boxplot_by_dimension(
     mean_log_scores=mean_log_scores,
     sample_size=280,
     save_path='./plot/rmspe_case1a_280.pdf',
-    ylim=(-0.005, 0.35)
+    model_names={1: 'Layer 1', 2: 'Layer 2', 3: 'Layer 3'},
+    yscale='linear'
 )
 ```
 - Expects nested score data: `{dimension_or_method: {sample_size: {layer: scores}}}`
 - Plots all available layers side by side for each dimension or method label
-- Uses default legend labels `Standard GP`, `2-layer DGP`, and `3-layer DGP`
-- Override labels with `model_names={1: 'Standard GP', 2: '2-layer DGP', 3: '3-layer DGP'}`
+- Uses automatic y-axis scaling unless `ylim=(lower, upper)` is supplied
+- Pass `yscale='symlog'` for metrics that need symmetric-log y-axis scaling
+- Uses default legend labels `Standard GP`, `2-layer DGP`, and `3-layer DGP`;
+  override labels with `model_names={1: 'Layer 1', 2: 'Layer 2', 3: 'Layer 3'}`
 
 ## Usage Example
 
@@ -288,8 +343,8 @@ from BDR_plot import plot_trace, plot_actual_vs_predicted
 # Compute metrics
 y_true = np.array([...])
 y_pred = np.array([...])
-y_pred_samples = np.array([...])  # (n_samples, n_test)
-y_pred_vars = np.array([...])      # (n_samples, n_test)
+y_pred_samples = np.array([...])  # (n_test, n_samples)
+bic_samples = np.array([...])     # (n_samples,)
 
 rmspe = compute_RMSPE(y_true, y_pred)
 print(f"RMSPE: {rmspe:.4f}")
@@ -298,7 +353,6 @@ print(f"RMSPE: {rmspe:.4f}")
 metrics = compute_all_metrics_summary(
     y_true=y_true,
     y_pred_samples=y_pred_samples,
-    y_pred_vars=y_pred_vars,
     BIC_samples=bic_samples
 )
 
@@ -342,6 +396,8 @@ multichain.create_all_diagnostics(output_dir='./diagnostics')
 | CRPS | Lower | Better probabilistic forecasts |
 | BIC | Higher | Better model (penalized by complexity) |
 | MLPPD | Higher | Better predictive distributions |
+| CP | Closer to target coverage | Better credible interval coverage |
+| ALCI | Lower for same coverage | Shorter credible intervals |
 | Score | Higher | Better overall model fit |
 
 ## BIC Computation Details
@@ -350,21 +406,22 @@ For multi-layer models, BIC correctly sums log-likelihoods:
 
 **1-Layer:**
 ```
-
-BIC = -2·loglik_y + k·log(n) (smaller means better)  or loglik_y - o.5 ·k·log(n)(higher means better) 
+BIC = loglik_y - 0.5 * k * log(n)
 ```
 
 **2-Layer:**
 ```
-BIC = -2·(loglik_y + loglik_q) + k·log(n) (smaller means better) or loglik_y + loglik_q - 0.5· k·log(n) (higher means better)
+BIC = (loglik_y + loglik_q) - 0.5 * k * log(n)
 ```
 
 **3-Layer:**
 ```
-BIC = -2·(loglik_y + loglik_q + loglik_r) + k·log(n)(smaller means better) or loglik_y + loglik_q + loglik_r -0.5 · k·log(n)(higher means better)
+BIC = (loglik_y + loglik_q + loglik_r) - 0.5 * k * log(n)
 ```
 
-For D>1 with separable kernels, latent layer log-likelihoods are summed across dimensions.
+This repository uses the signed log-likelihood form of BIC, so higher values
+are better. For D>1 with separable kernels, latent layer log-likelihoods are
+summed across dimensions.
 
 ## See Also
 
